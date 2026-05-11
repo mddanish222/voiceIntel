@@ -42,7 +42,7 @@ const audioSchema = new mongoose.Schema({
 const Audio = mongoose.model("Audio", audioSchema);
 
 // ── JWT helpers ─────────────────────────────────────────────
-const JWT_SECRET = process.env.JWT_SECRET || "voxintel_super_secret_change_this";
+const JWT_SECRET = process.env.JWT_SECRET || "voiceintel_super_secret_change_this";
 
 function signToken(userId) {
   return jwt.sign({ id: userId }, JWT_SECRET, { expiresIn: "7d" });
@@ -67,7 +67,7 @@ function auth(req, res, next) {
 const upload = multer({ storage: multer.memoryStorage() });
 
 // ── Health check ────────────────────────────────────────────
-app.get("/", (req, res) => res.send("VoxIntel backend running"));
+app.get("/", (req, res) => res.send("VoiceIntel backend running"));
 
 // ── AUTH ROUTES ─────────────────────────────────────────────
 
