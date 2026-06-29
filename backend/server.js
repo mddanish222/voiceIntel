@@ -28,18 +28,11 @@ app.use(express.json());
 //   2. Go to https://myaccount.google.com/apppasswords
 //   3. Create one for "Mail" -> copy the 16-character password into .env
 const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
-  requireTLS: true,
+  service: "gmail",
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-  tls: {
-    rejectUnauthorized: false,
-  },
-  family: 4,
 });
 
 function otpEmailHtml(code, purpose) {
