@@ -76,16 +76,30 @@ mongoose.connect(process.env.MONGO_URI)
 
 // ── Schemas ─────────────────────────────────────────────────
 
+// How long an UNVERIFIED account is allowed to exist before it's wiped.
+// Matches the OTP expiry window (10 minutes) per product decision.
+const UNVERIFIED_TTL_SECONDS = 10 * 60; // 10 minutes
+
 // User
 // NOTE: isVerified defaults to true so that any users created BEFORE this
 // change are automatically grandfathered in and don't get locked out.
 // Only the /auth/register route explicitly sets isVerified: false on creation.
+//
+// unverifiedExpiresAt is ONLY set on unverified accounts (register route).
+// A Mongo TTL index watches this field and auto-deletes the document once
+// it's in the past — so an account that never completes OTP verification
+// within 10 minutes is wiped automatically, no cron job needed. Verified
+// accounts never have this field set, so they're never touched by the TTL.
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   password: { type: String, required: true },
   isVerified: { type: Boolean, default: true },
+  unverifiedExpiresAt: { type: Date, default: undefined },
   createdAt: { type: Date, default: Date.now },
 });
+// expireAfterSeconds: 0 means "delete exactly at the timestamp stored in
+// the field" (the field itself already encodes the future expiry time).
+userSchema.index({ unverifiedExpiresAt: 1 }, { expireAfterSeconds: 0 });
 const User = mongoose.model("User", userSchema);
 
 // Audio (now with userId reference)
@@ -219,6 +233,11 @@ app.get("/", (req, res) => res.send("VoiceIntel backend running"));
 // ── AUTH ROUTES ─────────────────────────────────────────────
 
 // Register — creates an UNVERIFIED user and emails an OTP. No token yet.
+//
+// If an unverified record already exists for this email (e.g. they started
+// signing up before but never finished, and the TTL hasn't swept it yet),
+// we silently delete the stale record + its OTP and start fresh, per
+// product decision. A VERIFIED existing account still blocks registration.
 app.post("/auth/register", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: "Email and password required" });
@@ -228,10 +247,23 @@ app.post("/auth/register", async (req, res) => {
 
   try {
     const existing = await User.findOne({ email: normalized });
-    if (existing) return res.status(409).json({ error: "An account with this email already exists" });
+    if (existing) {
+      if (existing.isVerified) {
+        return res.status(409).json({ error: "An account with this email already exists" });
+      }
+      // Stale/incomplete unverified signup — wipe it and any pending OTP,
+      // then fall through to create a brand new one below.
+      await User.deleteOne({ _id: existing._id });
+      await Otp.deleteMany({ email: normalized, purpose: "verify" });
+    }
 
     const hashed = await bcrypt.hash(password, 12);
-    await User.create({ email: normalized, password: hashed, isVerified: false });
+    await User.create({
+      email: normalized,
+      password: hashed,
+      isVerified: false,
+      unverifiedExpiresAt: new Date(Date.now() + UNVERIFIED_TTL_SECONDS * 1000),
+    });
 
     await issueOtp(normalized, "verify");
 
@@ -255,9 +287,11 @@ app.post("/auth/verify-otp", async (req, res) => {
   try {
     await verifyOtp(normalized, "verify", code);
 
+    // Mark verified AND clear the TTL field so the account is no longer
+    // subject to auto-expiry — it's a permanent account from here on.
     const user = await User.findOneAndUpdate(
       { email: normalized },
-      { isVerified: true },
+      { isVerified: true, $unset: { unverifiedExpiresAt: "" } },
       { new: true }
     );
     if (!user) return res.status(404).json({ error: "Account not found" });
@@ -302,6 +336,12 @@ app.post("/auth/resend-otp", async (req, res) => {
 });
 
 // Login
+//
+// Verified users: straight in with email + password, no OTP, ever.
+// Unverified users (still inside the 10-min TTL window): blocked. We do
+// NOT auto re-send an OTP here anymore — the account is mid-signup, still
+// ticking down, and will either get verified or get wiped by the TTL. The
+// only way to (re)trigger an OTP is back through registration.
 app.post("/auth/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: "Email and password required" });
@@ -316,10 +356,13 @@ app.post("/auth/login", async (req, res) => {
     if (!valid) return res.status(401).json({ error: "Invalid email or password" });
 
     if (!user.isVerified) {
-      // Account exists + correct password, but never completed OTP verification.
-      // Send a fresh OTP automatically so the user can immediately verify.
-      try { await issueOtp(normalized, "verify"); } catch {}
-      return res.status(403).json({ error: "Please verify your email first", needsVerification: true, email: normalized });
+      // Mid-signup account that hasn't been swept by the TTL yet.
+      // Don't resend an OTP automatically — send them back to finish signup.
+      return res.status(403).json({
+        error: "This account hasn't finished signing up yet. Please complete registration again.",
+        needsRegistration: true,
+        email: normalized,
+      });
     }
 
     const token = signToken(user._id);
@@ -355,7 +398,10 @@ app.post("/auth/forgot-password", async (req, res) => {
 
   try {
     const user = await User.findOne({ email: normalized });
-    if (user) {
+    // Only send a reset code for verified accounts. An unverified account
+    // has no usable password flow yet (it should finish registration), so
+    // we deliberately skip issuing here too — response stays generic either way.
+    if (user && user.isVerified) {
       await issueOtp(normalized, "reset");
     }
     res.json(genericResponse);
@@ -369,7 +415,7 @@ app.post("/auth/forgot-password", async (req, res) => {
   }
 });
 
-// Step 2: verify reset code + set new password
+// Step 2: verify reset code + set new password -> auto-login (unchanged)
 app.post("/auth/reset-password", async (req, res) => {
   const { email, code, newPassword } = req.body;
   if (!email || !code || !newPassword) return res.status(400).json({ error: "Email, code, and new password required" });
