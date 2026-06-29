@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -23,12 +22,28 @@ app.use(express.json());
 console.log("SMTP_USER:", process.env.SMTP_USER);
 console.log("SMTP_PASS:", process.env.SMTP_PASS ? "Loaded" : "Missing");
 
+// NOTE: We deliberately do NOT use `service: "gmail"` here. That shorthand
+// defaults to port 465 with implicit TLS, and that port is blocked/heavily
+// throttled on Render's free tier outbound network — connections just hang
+// until they hit ETIMEDOUT (this is exactly what was happening before).
+// Port 587 with STARTTLS is far more likely to get through on free hosting.
+//
+// connectionTimeout / greetingTimeout / socketTimeout make sure that IF a
+// connection still can't be made, we fail fast (a few seconds) instead of
+// hanging the request for the platform's default ~2 minutes.
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false, // STARTTLS upgrades the connection after connecting on 587
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  pool: true,             // reuse connections instead of a fresh handshake per email
+  maxConnections: 3,
+  connectionTimeout: 10000, // 10s to establish TCP connection
+  greetingTimeout: 10000,   // 10s to receive SMTP greeting
+  socketTimeout: 15000,     // 15s of inactivity before giving up
 });
 
 transporter.verify((error, success) => {
@@ -67,12 +82,17 @@ async function sendOtpEmail(email, code, purpose = "verify") {
       ? "Your VoiceIntel AI password reset code"
       : "Your VoiceIntel AI verification code";
 
-  await transporter.sendMail({
-    from: `"VoiceIntel AI" <${process.env.SMTP_USER}>`,
-    to: email,
-    subject,
-    html: otpEmailHtml(code, purpose),
-  });
+  try {
+    await transporter.sendMail({
+      from: `"VoiceIntel AI" <${process.env.SMTP_USER}>`,
+      to: email,
+      subject,
+      html: otpEmailHtml(code, purpose),
+    });
+  } catch (err) {
+    console.error("sendOtpEmail failed:", err);
+    throw err;
+  }
 }
 
 // ── MongoDB ─────────────────────────────────────────────────
