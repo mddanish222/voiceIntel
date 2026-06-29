@@ -35,6 +35,14 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+transporter.verify((error, success) => {
+  if (error) {
+    console.log("SMTP Error:", error);
+  } else {
+    console.log("SMTP Ready");
+  }
+});
+
 function otpEmailHtml(code, purpose) {
   const heading = purpose === "reset" ? "Reset your password" : "Verify your email";
   const subtext =
