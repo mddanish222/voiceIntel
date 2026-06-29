@@ -21,18 +21,18 @@ app.use(cors({
 app.use(express.json());
 
 // ── MAILER (Gmail SMTP) ──────────────────────────────────────
-// SMTP_USER = your gmail address
-// SMTP_PASS = a Gmail "App Password" (NOT your real gmail password)
-// How to get an App Password:
-//   1. Turn on 2-Step Verification on your Google account
-//   2. Go to https://myaccount.google.com/apppasswords
-//   3. Create one for "Mail" -> copy the 16-character password into .env
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false,
+  requireTLS: true,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000,
 });
 
 transporter.verify((error, success) => {
