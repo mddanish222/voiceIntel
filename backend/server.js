@@ -36,9 +36,10 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-  lookup: (hostname, options, callback) => {
-    dns.lookup(hostname, { family: 4 }, callback);
+  tls: {
+    rejectUnauthorized: false,
   },
+  family: 4,
 });
 
 function otpEmailHtml(code, purpose) {
@@ -188,9 +189,9 @@ async function issueOtp(email, purpose) {
   await Otp.findOneAndUpdate(
     { email: normalized, purpose },
     { codeHash, expiresAt, attempts: 0, lastSentAt: new Date() },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   );
-
+  
   await sendOtpEmail(normalized, code, purpose);
 }
 
